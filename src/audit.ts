@@ -13,7 +13,20 @@ export type AuditAction =
   | "rule_added"
   | "rule_updated"
   | "rule_removed"
-  | "custom_chain_saved";
+  | "custom_chain_saved"
+  | "indexer_config_saved"
+  | "indexer_config_removed"
+  | "quest_created"
+  | "quest_removed"
+  | "quest_submission_approved"
+  | "quest_submission_rejected"
+  | "raffle_created"
+  | "raffle_drawn"
+  | "raffle_cancelled"
+  | "store_item_created"
+  | "store_item_removed"
+  | "sales_watch_created"
+  | "sales_watch_removed";
 
 export async function recordAuditEvent(
   env: Env,

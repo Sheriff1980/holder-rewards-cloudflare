@@ -1,3 +1,8 @@
+export type RoleSyncQueueMessage = {
+  guildId: string;
+  discordUserId: string;
+};
+
 export interface Env {
   DB: D1Database;
   APP_NAME: string;
@@ -5,6 +10,7 @@ export interface Env {
   DAILY_CLAIM_AMOUNT?: string;
   DISCORD_BOT_TOKEN: string;
   SETUP_TOKEN?: string;
+  ROLE_SYNC_QUEUE?: Queue<RoleSyncQueueMessage>;
 }
 
 export type DiscordInteraction = {
@@ -25,6 +31,7 @@ export type DiscordInteraction = {
   data?: {
     name?: string;
     custom_id?: string;
+    values?: string[];
     options?: Array<{
       name: string;
       type: number;
@@ -33,6 +40,14 @@ export type DiscordInteraction = {
         name: string;
         type: number;
         value?: string | number | boolean;
+      }>;
+    }>;
+    components?: Array<{
+      type: number;
+      components?: Array<{
+        custom_id?: string;
+        type?: number;
+        value?: string;
       }>;
     }>;
   };

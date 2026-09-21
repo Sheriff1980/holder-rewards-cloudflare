@@ -5,8 +5,51 @@ import {
   verifyDiscordRequest
 } from "./discord.js";
 import { listChains, parseCustomChain, saveCustomChain } from "./chains.js";
-import { managerPage, setupPage, verifyPage } from "./html.js";
-import type { DiscordInteraction, Env } from "./types.js";
+import {
+  IndexerConfigError,
+  listIndexerConfigs,
+  removeIndexerConfig,
+  saveIndexerConfig
+} from "./indexers.js";
+import {
+  checkQuest,
+  createQuest,
+  listPendingSubmissions,
+  listQuests,
+  listQuestsWithStatus,
+  QuestError,
+  removeQuest,
+  reviewQuestSubmission,
+  submitQuestCode,
+  submitQuestProof
+} from "./quests.js";
+import {
+  cancelRaffle,
+  createRaffle,
+  drawRaffle,
+  enterRaffle,
+  listRaffleEntriesForMember,
+  listRaffles,
+  RaffleError
+} from "./raffles.js";
+import {
+  createStoreItem,
+  listRecentPurchases,
+  listStoreItems,
+  listStorePurchaseCountsForMember,
+  purchaseStoreItem,
+  removeStoreItem,
+  StoreError
+} from "./store.js";
+import {
+  createSalesWatch,
+  listSalesWatches,
+  listTextChannels,
+  removeSalesWatch,
+  SalesWatchError
+} from "./sales.js";
+import { managerPage, memberRewardsPage, setupPage, verifyPage } from "./html.js";
+import type { DiscordInteraction, Env, RoleSyncQueueMessage } from "./types.js";
 import { AdminError, listManageableDiscordRoles, requireAdminSession } from "./admin.js";
 import {
   completeWalletChallenge,
@@ -22,11 +65,13 @@ import {
   removeRoleRule,
   RuleError,
   syncMemberRoles,
+  updateGroupMatchMode,
   updateRoleMatchMode,
   updateRoleRewardMultiplier
 } from "./rules.js";
-import { retryFailedRoleSyncs, runScheduledRoleSync } from "./scheduler.js";
-import { getRewardSettings, RewardSettingsError, updateRewardSettings } from "./points.js";
+import { processRoleSyncQueue, retryFailedRoleSyncs, runScheduledRoleSync } from "./scheduler.js";
+import { pollSalesWatches } from "./sales.js";
+import { getPointsBalance, getRewardSettings, RewardSettingsError, updateRewardSettings } from "./points.js";
 import {
   AssetError,
   brandLogoUrl,
@@ -47,6 +92,17 @@ import { buildGuildExport, type ExportKind } from "./exports.js";
 import { getWalletPrivacySettings, updateWalletPrivacySettings } from "./privacy.js";
 import { checkChainProviders } from "./health.js";
 import { checkLaunchReadiness } from "./readiness.js";
+import { MemberSessionError, requireMemberSession } from "./member.js";
+import {
+  AnnouncementError,
+  announceQuest,
+  announceRaffle,
+  announceStoreItem,
+  configureQuestChannel,
+  configureRewardsChannel,
+  getQuestChannelSettings,
+  getRewardsChannelSettings
+} from "./announcements.js";
 
 const securityHeaders = {
   "Content-Security-Policy":
@@ -69,6 +125,13 @@ function jsonResponse(body: unknown, status = 200): Response {
   return Response.json(body, {
     status,
     headers: securityHeaders
+  });
+}
+
+function privateJsonResponse(body: unknown, status = 200): Response {
+  return Response.json(body, {
+    status,
+    headers: { ...securityHeaders, "Cache-Control": "private, no-store" }
   });
 }
 
@@ -106,6 +169,84 @@ function hasSetupAccess(request: Request, env: Env): boolean {
 function bearerToken(request: Request): string {
   const authorization = request.headers.get("Authorization");
   return authorization?.startsWith("Bearer ") ? authorization.slice(7) : "";
+}
+
+async function memberApiResponse(request: Request, env: Env, path: string): Promise<Response> {
+  try {
+    const session = await requireMemberSession(env, bearerToken(request));
+
+    if (request.method === "GET" && path === "session") {
+      const [branding, rewards, balance, quests, raffles, entries, storeItems, storePurchases] = await Promise.all([
+        getGuildBranding(env, session.guild_id),
+        getRewardSettings(env, session.guild_id),
+        getPointsBalance(env, session.guild_id, session.discord_user_id),
+        listQuestsWithStatus(env, session.guild_id, session.discord_user_id),
+        listRaffles(env, session.guild_id),
+        listRaffleEntriesForMember(env, session.guild_id, session.discord_user_id),
+        listStoreItems(env, session.guild_id),
+        listStorePurchaseCountsForMember(env, session.guild_id, session.discord_user_id)
+      ]);
+      return privateJsonResponse({
+        guildId: session.guild_id,
+        branding,
+        rewards,
+        balance,
+        quests,
+        raffles: raffles
+          .filter((raffle) => raffle.status === "open")
+          .map((raffle) => ({ ...raffle, memberEntries: entries.get(raffle.id) ?? 0 })),
+        storeItems: storeItems.map((item) => ({
+          ...item,
+          memberPurchases: storePurchases.get(item.id) ?? 0
+        }))
+      });
+    }
+
+    if (request.method === "POST" && path.startsWith("quests/") && path.endsWith("/check")) {
+      const questId = path.slice("quests/".length, -"/check".length);
+      return privateJsonResponse(await checkQuest(env, session.guild_id, questId, session.discord_user_id));
+    }
+
+    if (request.method === "POST" && path === "quests/code") {
+      const input = (await request.json()) as Record<string, unknown>;
+      return privateJsonResponse(await submitQuestCode(env, session.guild_id, session.discord_user_id, input.code));
+    }
+
+    if (request.method === "POST" && path.startsWith("quests/") && path.endsWith("/proof")) {
+      const questId = path.slice("quests/".length, -"/proof".length);
+      const input = (await request.json()) as Record<string, unknown>;
+      return privateJsonResponse(await submitQuestProof(env, session.guild_id, questId, session.discord_user_id, input.proof));
+    }
+
+    if (request.method === "POST" && path.startsWith("raffles/") && path.endsWith("/enter")) {
+      const raffleId = path.slice("raffles/".length, -"/enter".length);
+      const input = (await request.json()) as Record<string, unknown>;
+      return privateJsonResponse(await enterRaffle(env, {
+        guildId: session.guild_id,
+        raffleId,
+        discordUserId: session.discord_user_id,
+        count: input.count
+      }));
+    }
+
+    if (request.method === "POST" && path.startsWith("store/") && path.endsWith("/buy")) {
+      const itemId = path.slice("store/".length, -"/buy".length);
+      return privateJsonResponse(await purchaseStoreItem(env, {
+        guildId: session.guild_id,
+        itemId,
+        discordUserId: session.discord_user_id
+      }));
+    }
+  } catch (error) {
+    if (error instanceof MemberSessionError) return privateJsonResponse({ error: error.message }, error.status);
+    if (error instanceof QuestError || error instanceof RaffleError || error instanceof StoreError) {
+      return privateJsonResponse({ error: error.message }, 400);
+    }
+    if (error instanceof SyntaxError) return privateJsonResponse({ error: "Request body must be valid JSON." }, 400);
+    console.error("Member rewards request failed", { method: request.method, path, error });
+    return privateJsonResponse({ error: "Community rewards are temporarily unavailable." }, 503);
+  }
+  return privateJsonResponse({ error: "Not found" }, 404);
 }
 
 async function healthResponse(env: Env): Promise<Response> {
@@ -257,32 +398,56 @@ async function verificationApiResponse(request: Request, env: Env, action: strin
   return jsonResponse({ error: "Not found" }, 404);
 }
 
-const ruleTypes = new Set(["erc721", "erc20", "erc721-trait", "erc721-token", "erc1155", "spl-token"]);
+const ruleTypes = new Set(["erc721", "erc20", "erc721-trait", "erc721-token", "erc1155", "spl-token", "solana-collection"]);
 
 async function managerApiResponse(request: Request, env: Env, path: string): Promise<Response> {
   try {
     const session = await requireAdminSession(env, bearerToken(request));
     if (request.method === "GET" && path === "session") {
-      const [chains, roles, rules, rewards, branding, operations, privacy, hasIcon, hasLogo] = await Promise.all([
-        listChains(env),
+      const [chains, roles, rules, rewards, branding, operations, privacy, indexers, quests, raffles, storeItems, recentPurchases, pendingSubmissions, salesWatches, channels, rewardsChannel, questChannel, queue, hasIcon, hasLogo] = await Promise.all([
+        listChains(env, { includeDemo: true }),
         listManageableDiscordRoles(env, session.guild_id),
         listRoleRules(env, session.guild_id),
         getRewardSettings(env, session.guild_id),
         getGuildBranding(env, session.guild_id),
         getGuildOperations(env, session.guild_id),
         getWalletPrivacySettings(env, session.guild_id),
+        listIndexerConfigs(env),
+        listQuests(env, session.guild_id),
+        listRaffles(env, session.guild_id),
+        listStoreItems(env, session.guild_id),
+        listRecentPurchases(env, session.guild_id),
+        listPendingSubmissions(env, session.guild_id),
+        listSalesWatches(env, session.guild_id),
+        listTextChannels(env, session.guild_id).catch(() => []),
+        getRewardsChannelSettings(env, session.guild_id),
+        getQuestChannelSettings(env, session.guild_id),
+        env.DB.prepare("SELECT value FROM app_state WHERE key = 'last_queue_run'")
+          .first<{ value: string }>()
+          .then((row) => ({ enabled: Boolean(env.ROLE_SYNC_QUEUE), lastRunAt: row?.value ?? null })),
         hasCurrencyIcon(env, session.guild_id),
         hasBrandLogo(env, session.guild_id)
       ]);
       return jsonResponse({
         expiresAt: session.expires_at,
-        chains: chains.filter((chain) => chain.family === "evm" || chain.family === "solana"),
+        chains: chains.filter((chain) => chain.family === "evm" || chain.family === "solana" || chain.family === "mock"),
         roles,
         rules,
         rewards,
         branding,
         operations,
         privacy,
+        indexers,
+        quests,
+        raffles,
+        storeItems,
+        recentPurchases,
+        pendingSubmissions,
+        salesWatches,
+        channels,
+        rewardsChannel,
+        questChannel,
+        queue,
         currencyIconUrl: hasIcon
           ? `${currencyIconUrl(new URL(request.url).origin, session.guild_id)}?v=${Date.now()}`
           : null,
@@ -299,6 +464,42 @@ async function managerApiResponse(request: Request, env: Env, path: string): Pro
         checkedAt: new Date().toISOString(),
         providers
       });
+    }
+
+    if (request.method === "POST" && path === "rewards-channel") {
+      const input = (await request.json()) as Record<string, unknown>;
+      if (typeof input.channelId !== "string") {
+        return jsonResponse({ error: "Choose a Discord channel for store and raffle posts." }, 400);
+      }
+      const channels = await listTextChannels(env, session.guild_id);
+      if (!channels.some((channel) => channel.id === input.channelId)) {
+        return jsonResponse({ error: "Choose a text channel from this Discord server." }, 400);
+      }
+      const rewardsChannel = await configureRewardsChannel(
+        env,
+        session.guild_id,
+        input.channelId,
+        new URL(request.url).origin
+      );
+      return jsonResponse({ ok: true, rewardsChannel });
+    }
+
+    if (request.method === "POST" && path === "quest-channel") {
+      const input = (await request.json()) as Record<string, unknown>;
+      if (typeof input.channelId !== "string") {
+        return jsonResponse({ error: "Choose a Discord channel for quest posts." }, 400);
+      }
+      const channels = await listTextChannels(env, session.guild_id);
+      if (!channels.some((channel) => channel.id === input.channelId)) {
+        return jsonResponse({ error: "Choose a text channel from this Discord server." }, 400);
+      }
+      const questChannel = await configureQuestChannel(
+        env,
+        session.guild_id,
+        input.channelId,
+        new URL(request.url).origin
+      );
+      return jsonResponse({ ok: true, questChannel });
     }
 
     if (request.method === "POST" && path === "retry-sync-problems") {
@@ -444,6 +645,32 @@ async function managerApiResponse(request: Request, env: Env, path: string): Pro
       return jsonResponse({ ok: true, chain: parsed.chain }, 201);
     }
 
+    if (request.method === "PUT" && path === "chain-indexer") {
+      const input = (await request.json()) as Record<string, unknown>;
+      const indexer = await saveIndexerConfig(env, { chainId: input.chainId, url: input.url });
+      await recordAuditEvent(env, {
+        guildId: session.guild_id,
+        actorDiscordUserId: session.discord_user_id,
+        action: "indexer_config_saved",
+        detail: `Indexer configured for ${indexer.chainId}`
+      });
+      return jsonResponse({ ok: true, indexer });
+    }
+
+    if (request.method === "DELETE" && path === "chain-indexer") {
+      const input = (await request.json()) as Record<string, unknown>;
+      const removed = await removeIndexerConfig(env, input.chainId);
+      if (removed) await recordAuditEvent(env, {
+        guildId: session.guild_id,
+        actorDiscordUserId: session.discord_user_id,
+        action: "indexer_config_removed",
+        detail: `Indexer removed for ${String(input.chainId)}`
+      });
+      return removed
+        ? jsonResponse({ ok: true })
+        : jsonResponse({ error: "That chain has no indexer configured." }, 404);
+    }
+
     if (request.method === "POST" && path === "rules") {
       const input = (await request.json()) as Record<string, unknown>;
       if (typeof input.type !== "string" || !ruleTypes.has(input.type)) {
@@ -457,14 +684,16 @@ async function managerApiResponse(request: Request, env: Env, path: string): Pro
         guildId: session.guild_id,
         roleId: input.roleId,
         chainId: input.chainId,
-        type: input.type as "erc721" | "erc20" | "erc721-trait" | "erc721-token" | "erc1155" | "spl-token",
+        type: input.type as "erc721" | "erc20" | "erc721-trait" | "erc721-token" | "erc1155" | "spl-token" | "solana-collection",
         contractAddress: input.contractAddress,
         minimum: input.minimum,
         traitName: input.traitName,
         traitValue: input.traitValue,
         tokenId: input.tokenId,
         matchMode: input.matchMode,
-        rewardMultiplier: input.rewardMultiplier
+        rewardMultiplier: input.rewardMultiplier,
+        groupKey: input.groupKey,
+        groupMatchMode: input.groupMatchMode
       });
       await recordAuditEvent(env, {
         guildId: session.guild_id,
@@ -496,8 +725,23 @@ async function managerApiResponse(request: Request, env: Env, path: string): Pro
       return jsonResponse({ ok: true, roleId: input.roleId, matchMode });
     }
 
-    if (request.method === "PUT" && path === "role-multiplier") {
+    if (request.method === "PUT" && path === "group-mode") {
       const input = (await request.json()) as Record<string, unknown>;
+      const roles = await listManageableDiscordRoles(env, session.guild_id);
+      if (!roles.some((role) => role.id === input.roleId)) {
+        return jsonResponse({ error: "Choose a role below the bot's role in Discord." }, 400);
+      }
+      const saved = await updateGroupMatchMode(env, session.guild_id, input.roleId, input.groupKey, input.matchMode);
+      await recordAuditEvent(env, {
+        guildId: session.guild_id,
+        actorDiscordUserId: session.discord_user_id,
+        action: "rule_updated",
+        detail: `${saved.matchMode.toUpperCase()} requirements for group "${saved.groupKey || "Main"}" on role ...${String(input.roleId).slice(-6)}`
+      });
+      return jsonResponse({ ok: true, roleId: input.roleId, groupKey: saved.groupKey, matchMode: saved.matchMode });
+    }
+
+    if (request.method === "PUT" && path === "role-multiplier") {      const input = (await request.json()) as Record<string, unknown>;
       const roles = await listManageableDiscordRoles(env, session.guild_id);
       if (!roles.some((role) => role.id === input.roleId)) {
         return jsonResponse({ error: "Choose a role below the bot's role in Discord." }, 400);
@@ -530,6 +774,220 @@ async function managerApiResponse(request: Request, env: Env, path: string): Pro
         ? jsonResponse({ ok: true })
         : jsonResponse({ error: "That holder rule was already removed." }, 404);
     }
+
+    if (request.method === "POST" && path === "quests") {
+      const input = (await request.json()) as Record<string, unknown>;
+      if (input.kind === "hold_role") {
+        const roles = await listManageableDiscordRoles(env, session.guild_id);
+        if (!roles.some((role) => role.id === input.roleId)) {
+          return jsonResponse({ error: "Choose a role below the bot's role in Discord." }, 400);
+        }
+      }
+      const quest = await createQuest(env, {
+        guildId: session.guild_id,
+        title: input.title,
+        kind: input.kind,
+        reward: input.reward,
+        roleId: input.roleId,
+        days: input.days,
+        code: input.code,
+        instructions: input.instructions
+      });
+      await recordAuditEvent(env, {
+        guildId: session.guild_id,
+        actorDiscordUserId: session.discord_user_id,
+        action: "quest_created",
+        detail: `Quest "${quest.title}" (${quest.kind}, ${quest.reward} points)`
+      });
+      let announcementWarning: string | null = null;
+      let announcementPosted = false;
+      try {
+        announcementPosted = await announceQuest(
+          env,
+          session.guild_id,
+          new URL(request.url).origin,
+          quest
+        );
+      } catch (error) {
+        announcementWarning = error instanceof Error ? error.message : "The quest announcement could not be posted.";
+      }
+      return jsonResponse({ ok: true, quest, announcementPosted, announcementWarning }, 201);
+    }
+
+    if (request.method === "DELETE" && path.startsWith("quests/")) {
+      const questId = path.slice("quests/".length);
+      const removed = await removeQuest(env, session.guild_id, questId);
+      if (removed) await recordAuditEvent(env, {
+        guildId: session.guild_id,
+        actorDiscordUserId: session.discord_user_id,
+        action: "quest_removed",
+        detail: `Quest ...${questId.slice(-6)} removed`
+      });
+      return removed
+        ? jsonResponse({ ok: true })
+        : jsonResponse({ error: "That quest was already removed." }, 404);
+    }
+
+    if (
+      request.method === "POST" &&
+      path.startsWith("quest-submissions/") &&
+      (path.endsWith("/approve") || path.endsWith("/reject"))
+    ) {
+      const approve = path.endsWith("/approve");
+      const submissionId = path.slice(
+        "quest-submissions/".length,
+        -(approve ? "/approve" : "/reject").length
+      );
+      const { submission, result } = await reviewQuestSubmission(env, {
+        guildId: session.guild_id,
+        submissionId,
+        reviewerId: session.discord_user_id,
+        approve
+      });
+      await recordAuditEvent(env, {
+        guildId: session.guild_id,
+        actorDiscordUserId: session.discord_user_id,
+        action: approve ? "quest_submission_approved" : "quest_submission_rejected",
+        detail: `"${submission.questTitle}" proof from member ...${submission.discordUserId.slice(-6)} ${result}`
+      });
+      return jsonResponse({ ok: true, result });
+    }
+
+    if (request.method === "POST" && path === "raffles") {
+      const input = (await request.json()) as Record<string, unknown>;
+      if (typeof input.prizeRoleId === "string" && input.prizeRoleId.length > 0) {
+        const roles = await listManageableDiscordRoles(env, session.guild_id);
+        if (!roles.some((role) => role.id === input.prizeRoleId)) {
+          return jsonResponse({ error: "Choose a prize role below the bot's role in Discord." }, 400);
+        }
+      }
+      const raffle = await createRaffle(env, {
+        guildId: session.guild_id,
+        title: input.title,
+        prize: input.prize,
+        prizeRoleId: input.prizeRoleId,
+        entryCost: input.entryCost,
+        maxEntriesPerMember: input.maxEntriesPerMember,
+        createdBy: session.discord_user_id
+      });
+      await recordAuditEvent(env, {
+        guildId: session.guild_id,
+        actorDiscordUserId: session.discord_user_id,
+        action: "raffle_created",
+        detail: `Raffle "${raffle.title}" (${raffle.entryCost} points per entry)`
+      });
+      let announcementWarning: string | null = null;
+      let announcementPosted = false;
+      try {
+        announcementPosted = await announceRaffle(env, session.guild_id, new URL(request.url).origin, raffle);
+      } catch (error) {
+        announcementWarning = error instanceof Error ? error.message : "The raffle announcement could not be posted.";
+      }
+      return jsonResponse({ ok: true, raffle, announcementPosted, announcementWarning }, 201);
+    }
+
+    if (request.method === "POST" && path.startsWith("raffles/") && path.endsWith("/draw")) {
+      const raffleId = path.slice("raffles/".length, -"/draw".length);
+      const result = await drawRaffle(env, { guildId: session.guild_id, raffleId });
+      await recordAuditEvent(env, {
+        guildId: session.guild_id,
+        actorDiscordUserId: session.discord_user_id,
+        action: "raffle_drawn",
+        detail: `Raffle "${result.raffle.title}" drawn; winner ...${result.winnerDiscordUserId.slice(-6)}`
+      });
+      return jsonResponse(result);
+    }
+
+    if (request.method === "POST" && path.startsWith("raffles/") && path.endsWith("/cancel")) {
+      const raffleId = path.slice("raffles/".length, -"/cancel".length);
+      const result = await cancelRaffle(env, { guildId: session.guild_id, raffleId });
+      await recordAuditEvent(env, {
+        guildId: session.guild_id,
+        actorDiscordUserId: session.discord_user_id,
+        action: "raffle_cancelled",
+        detail: `Raffle "${result.raffle.title}" cancelled; ${result.refundedPoints} points refunded to ${result.refundedMembers} member(s)`
+      });
+      return jsonResponse(result);
+    }
+
+    if (request.method === "POST" && path === "store-items") {
+      const input = (await request.json()) as Record<string, unknown>;
+      if (typeof input.roleId === "string" && input.roleId.length > 0) {
+        const roles = await listManageableDiscordRoles(env, session.guild_id);
+        if (!roles.some((role) => role.id === input.roleId)) {
+          return jsonResponse({ error: "Choose a store role below the bot's role in Discord." }, 400);
+        }
+      }
+      const item = await createStoreItem(env, {
+        guildId: session.guild_id,
+        title: input.title,
+        description: input.description,
+        price: input.price,
+        roleId: input.roleId,
+        stock: input.stock,
+        purchaseLimitPerMember: input.purchaseLimitPerMember
+      });
+      await recordAuditEvent(env, {
+        guildId: session.guild_id,
+        actorDiscordUserId: session.discord_user_id,
+        action: "store_item_created",
+        detail: `Store item "${item.title}" (${item.price} points)`
+      });
+      let announcementWarning: string | null = null;
+      let announcementPosted = false;
+      try {
+        announcementPosted = await announceStoreItem(env, session.guild_id, new URL(request.url).origin, item);
+      } catch (error) {
+        announcementWarning = error instanceof Error ? error.message : "The store announcement could not be posted.";
+      }
+      return jsonResponse({ ok: true, item, announcementPosted, announcementWarning }, 201);
+    }
+
+    if (request.method === "DELETE" && path.startsWith("store-items/")) {
+      const itemId = path.slice("store-items/".length);
+      const removed = await removeStoreItem(env, session.guild_id, itemId);
+      if (removed) await recordAuditEvent(env, {
+        guildId: session.guild_id,
+        actorDiscordUserId: session.discord_user_id,
+        action: "store_item_removed",
+        detail: `Store item ...${itemId.slice(-6)} removed`
+      });
+      return removed
+        ? jsonResponse({ ok: true })
+        : jsonResponse({ error: "That store item was already removed." }, 404);
+    }
+
+    if (request.method === "POST" && path === "sales-watches") {
+      const input = (await request.json()) as Record<string, unknown>;
+      const watch = await createSalesWatch(env, {
+        guildId: session.guild_id,
+        chainId: input.chainId,
+        contractAddress: input.contractAddress,
+        channelId: input.channelId,
+        createdBy: session.discord_user_id
+      });
+      await recordAuditEvent(env, {
+        guildId: session.guild_id,
+        actorDiscordUserId: session.discord_user_id,
+        action: "sales_watch_created",
+        detail: `Sales watch for ${watch.contractAddress.slice(0, 10)}... on ${watch.chainId}`
+      });
+      return jsonResponse({ ok: true, watch }, 201);
+    }
+
+    if (request.method === "DELETE" && path.startsWith("sales-watches/")) {
+      const watchId = path.slice("sales-watches/".length);
+      const removed = await removeSalesWatch(env, session.guild_id, watchId);
+      if (removed) await recordAuditEvent(env, {
+        guildId: session.guild_id,
+        actorDiscordUserId: session.discord_user_id,
+        action: "sales_watch_removed",
+        detail: `Sales watch ...${watchId.slice(-6)} removed`
+      });
+      return removed
+        ? jsonResponse({ ok: true })
+        : jsonResponse({ error: "That sales watch was already removed." }, 404);
+    }
   } catch (error) {
     if (error instanceof AdminError || error instanceof RuleError) {
       return jsonResponse({ error: error.message }, error.status);
@@ -541,6 +999,24 @@ async function managerApiResponse(request: Request, env: Env, path: string): Pro
       return jsonResponse({ error: error.message }, error.status);
     }
     if (error instanceof BrandingError) {
+      return jsonResponse({ error: error.message }, 400);
+    }
+    if (error instanceof IndexerConfigError) {
+      return jsonResponse({ error: error.message }, 400);
+    }
+    if (error instanceof QuestError) {
+      return jsonResponse({ error: error.message }, 400);
+    }
+    if (error instanceof RaffleError) {
+      return jsonResponse({ error: error.message }, 400);
+    }
+    if (error instanceof StoreError) {
+      return jsonResponse({ error: error.message }, 400);
+    }
+    if (error instanceof SalesWatchError) {
+      return jsonResponse({ error: error.message }, 400);
+    }
+    if (error instanceof AnnouncementError) {
       return jsonResponse({ error: error.message }, 400);
     }
     if (error instanceof SyntaxError) {
@@ -611,6 +1087,10 @@ export async function handleRequest(
     return htmlResponse(verifyPage(env, request.url));
   }
 
+  if (request.method === "GET" && url.pathname === "/rewards") {
+    return htmlResponse(memberRewardsPage(env));
+  }
+
   if (request.method === "GET" && url.pathname === "/manage") {
     return htmlResponse(managerPage(env));
   }
@@ -643,6 +1123,10 @@ export async function handleRequest(
     return managerApiResponse(request, env, url.pathname.slice("/api/admin/".length));
   }
 
+  if (url.pathname.startsWith("/api/member/")) {
+    return memberApiResponse(request, env, url.pathname.slice("/api/member/".length));
+  }
+
   return jsonResponse({ error: "Not found" }, 404);
 }
 
@@ -669,5 +1153,13 @@ export default {
       .first<{ value: string }>();
     if (origin?.value) await ensureDiscordSetup(env, origin.value);
     await runScheduledRoleSync(env);
+    try {
+      await pollSalesWatches(env);
+    } catch (error) {
+      console.error("Sales watch poll failed", error);
+    }
+  },
+  async queue(batch: MessageBatch<RoleSyncQueueMessage>, env: Env): Promise<void> {
+    await processRoleSyncQueue(env, batch);
   }
-} satisfies ExportedHandler<Env>;
+} satisfies ExportedHandler<Env, RoleSyncQueueMessage>;

@@ -40,7 +40,7 @@ function page(title: string, body: string): string {
       .status.problem::before { background: #c83f3f; }
       .panel { margin-bottom: 20px; padding: 24px; background: #fff; border: 1px solid #d8dee5; border-radius: 8px; }
       label { display: block; margin: 18px 0 7px; font-weight: 650; }
-      input, select { width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid #aeb8c2; border-radius: 6px; background: #fff; font: inherit; }
+      input, select, textarea { width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid #aeb8c2; border-radius: 6px; background: #fff; font: inherit; }
       button, .button { display: inline-flex; min-height: 42px; align-items: center; justify-content: center; margin-top: 12px; padding: 9px 15px; color: var(--accent-text); background: var(--accent); border: 0; border-radius: 6px; font: inherit; font-weight: 700; text-decoration: none; cursor: pointer; }
       button:disabled { opacity: .6; cursor: wait; }
       button.secondary { color: #1769c2; background: #fff; border: 1px solid #1769c2; }
@@ -92,13 +92,14 @@ function page(title: string, body: string): string {
       .activity-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px; padding: 12px 0; border-bottom: 1px solid #d8dee5; }
       .activity-row span { display: block; }
       .activity-row time { color: #5e6b76; font-size: 13px; white-space: nowrap; }
+      .member-actions { width: min(240px, 42vw); }
       [hidden] { display: none !important; }
       .wallet-address { overflow-wrap: anywhere; }
       .qr-handoff { width: min(240px, 100%); margin: 16px auto 4px; }
       .qr-handoff img { display: block; width: 100%; aspect-ratio: 1; border: 1px solid #d8dee5; background: #fff; }
       details { margin-top: 22px; border-top: 1px solid #d8dee5; padding-top: 18px; }
       summary { color: #1769c2; font-weight: 700; cursor: pointer; }
-      @media (max-width: 560px) { #chain-list, .field-grid, .icon-editor, .rule-group-header { grid-template-columns: 1fr; } .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .activity-row { grid-template-columns: 1fr; gap: 4px; } }
+      @media (max-width: 560px) { #chain-list, .field-grid, .icon-editor, .rule-group-header, .rule-row { grid-template-columns: 1fr; } .member-actions { width: 100%; } .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .activity-row { grid-template-columns: 1fr; gap: 4px; } }
     </style>
   </head>
   <body>${body}</body>
@@ -313,6 +314,7 @@ export function managerPage(env: Env): string {
             <div class="metric"><strong id="metric-points">0</strong><span>Reward entries</span></div>
             <div class="metric"><strong id="metric-problems">0</strong><span>Sync problems</span></div>
             <div class="metric"><strong id="metric-scheduled">Never</strong><span>Last scheduled check</span></div>
+            <div class="metric"><strong id="metric-queue">Off</strong><span>Queue offload</span></div>
           </div>
           <div id="sync-problem-area" class="notice" hidden>
             <p id="sync-alert"></p>
@@ -395,6 +397,10 @@ export function managerPage(env: Env): string {
                 <label for="holder-daily-amount">Daily holder reward</label>
                 <input id="holder-daily-amount" type="number" min="0" max="1000000" step="1" required>
               </div>
+              <div>
+                <label for="tip-daily-limit">Daily tipping limit per member</label>
+                <input id="tip-daily-limit" type="number" min="0" max="1000000" step="1" required>
+              </div>
             </div>
             <div class="form-actions"><button id="save-rewards" type="submit">Save rewards</button></div>
           </form>
@@ -425,6 +431,7 @@ export function managerPage(env: Env): string {
                   <option value="erc721-token">Exact NFT</option>
                   <option value="erc1155">ERC-1155 item balance</option>
                   <option value="spl-token">Solana token or NFT mint</option>
+                  <option value="solana-collection">Solana NFT collection</option>
                 </select>
               </div>
               <div>
@@ -445,6 +452,18 @@ export function managerPage(env: Env): string {
               <div>
                 <label for="reward-multiplier">Reward multiplier</label>
                 <input id="reward-multiplier" type="number" min="1" max="100" step="1" value="1" required>
+              </div>
+              <div>
+                <label for="group-key">Requirement group</label>
+                <input id="group-key" list="group-keys" maxlength="30" placeholder="Main">
+                <datalist id="group-keys"></datalist>
+              </div>
+              <div>
+                <label for="group-match-mode">Group requires</label>
+                <select id="group-match-mode">
+                  <option value="any">Any requirement</option>
+                  <option value="all">All requirements</option>
+                </select>
               </div>
               <div>
                 <label id="asset-address-label" for="contract-address">Contract address</label>
@@ -478,6 +497,155 @@ export function managerPage(env: Env): string {
           <div id="rule-list" class="rule-list"></div>
         </section>
         <section class="panel">
+          <h2>Quest channel</h2>
+          <p class="muted">The bot posts a permanent Quest panel here and announces new quests automatically.</p>
+          <label for="quest-channel">Discord channel</label>
+          <select id="quest-channel"></select>
+          <div class="form-actions"><button id="save-quest-channel" type="button">Save and publish panel</button></div>
+          <div id="quest-channel-result" aria-live="polite"></div>
+        </section>
+        <section class="panel">
+          <h2>Quests</h2>
+          <form id="quest-form">
+            <div class="field-grid">
+              <div>
+                <label for="quest-title">Quest</label>
+                <input id="quest-title" maxlength="80" placeholder="Join the crew" required>
+              </div>
+              <div>
+                <label for="quest-kind">Type</label>
+                <select id="quest-kind">
+                  <option value="link_wallet">Link a wallet</option>
+                  <option value="hold_role">Hold a role</option>
+                  <option value="daily_claims">Collect daily rewards</option>
+                  <option value="code">Secret code</option>
+                  <option value="custom">Custom (manager reviews proof)</option>
+                </select>
+              </div>
+              <div>
+                <label for="quest-reward">Reward</label>
+                <input id="quest-reward" type="number" min="1" max="1000000" step="1" value="50" required>
+              </div>
+            </div>
+            <div id="quest-role-field" hidden>
+              <label for="quest-role">Required role</label>
+              <select id="quest-role"></select>
+            </div>
+            <div id="quest-days-field" hidden>
+              <label for="quest-days">Days with a daily claim</label>
+              <input id="quest-days" type="number" min="2" max="365" step="1" value="5">
+            </div>
+            <div id="quest-code-field" hidden>
+              <label for="quest-code">Secret code</label>
+              <input id="quest-code" maxlength="100" placeholder="Members submit this in Discord">
+            </div>
+            <div id="quest-instructions-field" hidden>
+              <label for="quest-instructions">Instructions</label>
+              <input id="quest-instructions" maxlength="300" placeholder="Retweet and comment on this post: https://...">
+            </div>
+            <div class="form-actions"><button id="save-quest" type="submit">Add quest</button></div>
+          </form>
+          <div id="quest-result" aria-live="polite"></div>
+          <div id="quest-list" class="rule-list"></div>
+          <div id="submission-area" hidden>
+            <h2>Pending quest proofs</h2>
+            <div id="submission-list" class="rule-list"></div>
+          </div>
+        </section>
+        <section class="panel">
+          <h2>Store and raffle channel</h2>
+          <p class="muted">The bot posts permanent Store and Raffle panels here and announces new items and raffles automatically.</p>
+          <label for="rewards-channel">Discord channel</label>
+          <select id="rewards-channel"></select>
+          <div class="form-actions"><button id="save-rewards-channel" type="button">Save and publish panels</button></div>
+          <div id="rewards-channel-result" aria-live="polite"></div>
+        </section>
+        <section class="panel">
+          <h2>Raffles</h2>
+          <form id="raffle-form">
+            <div class="field-grid">
+              <div>
+                <label for="raffle-title">Raffle</label>
+                <input id="raffle-title" maxlength="80" placeholder="Friday giveaway" required>
+              </div>
+              <div>
+                <label for="raffle-prize">Prize</label>
+                <input id="raffle-prize" maxlength="120" placeholder="VIP role or a merch code" required>
+              </div>
+              <div>
+                <label for="raffle-prize-role">Automatic prize role</label>
+                <select id="raffle-prize-role"></select>
+              </div>
+              <div>
+                <label for="raffle-cost">Entry cost</label>
+                <input id="raffle-cost" type="number" min="1" max="1000000" step="1" value="25" required>
+              </div>
+              <div>
+                <label for="raffle-max-entries">Max entries per member</label>
+                <input id="raffle-max-entries" type="number" min="1" max="1000" step="1" value="10" required>
+              </div>
+            </div>
+            <div class="form-actions"><button id="save-raffle" type="submit">Open raffle</button></div>
+          </form>
+          <div id="raffle-result" aria-live="polite"></div>
+          <div id="raffle-list" class="rule-list"></div>
+        </section>
+        <section class="panel">
+          <h2>Store</h2>
+          <form id="store-form">
+            <div class="field-grid">
+              <div>
+                <label for="store-title">Item</label>
+                <input id="store-title" maxlength="80" placeholder="VIP role or merch code" required>
+              </div>
+              <div>
+                <label for="store-price">Price</label>
+                <input id="store-price" type="number" min="1" max="1000000" step="1" value="500" required>
+              </div>
+              <div>
+                <label for="store-role">Automatic role</label>
+                <select id="store-role"></select>
+              </div>
+              <div>
+                <label for="store-stock">Stock</label>
+                <input id="store-stock" type="number" min="1" max="10000" step="1" placeholder="Blank for unlimited">
+              </div>
+              <div>
+                <label for="store-purchase-limit">Maximum purchases per member</label>
+                <input id="store-purchase-limit" type="number" min="1" max="10000" step="1" placeholder="Blank for unlimited">
+              </div>
+            </div>
+            <label for="store-description">Description</label>
+            <input id="store-description" maxlength="200" placeholder="What the buyer gets">
+            <div class="form-actions"><button id="save-store-item" type="submit">Add item</button></div>
+          </form>
+          <div id="store-result" aria-live="polite"></div>
+          <div id="store-list" class="rule-list"></div>
+          <h2>Recent purchases</h2>
+          <div id="purchase-list" class="rule-list"></div>
+        </section>
+        <section class="panel">
+          <h2>Sales bot</h2>
+          <p class="muted">Posts to a channel when an NFT from a watched collection sells. Needs an NFT indexer URL for the network (see Advanced network settings).</p>
+          <form id="sales-form">
+            <div class="field-grid">
+              <div>
+                <label for="sales-chain">Network</label>
+                <select id="sales-chain"></select>
+              </div>
+              <div>
+                <label for="sales-channel">Post to channel</label>
+                <select id="sales-channel"></select>
+              </div>
+            </div>
+            <label for="sales-contract">Collection contract</label>
+            <input id="sales-contract" placeholder="0x..." autocomplete="off" required>
+            <div class="form-actions"><button id="save-sales-watch" type="submit">Watch collection</button></div>
+          </form>
+          <div id="sales-result" aria-live="polite"></div>
+          <div id="sales-list" class="rule-list"></div>
+        </section>
+        <section class="panel">
           <details>
             <summary>Advanced network settings</summary>
             <h2>Add an EVM-compatible network</h2>
@@ -507,6 +675,20 @@ export function managerPage(env: Env): string {
               <div class="form-actions"><button id="save-custom-chain" type="submit">Save network</button></div>
             </form>
             <div id="custom-chain-result" aria-live="polite"></div>
+            <h2>Optional NFT indexers</h2>
+            <p class="muted">Only needed for trait rules on very large or non-enumerable EVM collections and for collection-wide Solana NFT rules. Leave blank to keep using free direct network checks.</p>
+            <form id="indexer-form">
+              <label for="indexer-chain">Network</label>
+              <select id="indexer-chain"></select>
+              <label for="indexer-url">Indexer URL</label>
+              <input id="indexer-url" type="url" placeholder="https://eth-mainnet.g.alchemy.com/nft/v3/your-key">
+              <p class="muted" id="indexer-hint"></p>
+              <div class="form-actions">
+                <button id="save-indexer" type="submit">Save indexer</button>
+                <button id="remove-indexer" type="button" hidden>Remove indexer</button>
+              </div>
+            </form>
+            <div id="indexer-result" aria-live="polite"></div>
           </details>
         </section>
       </div>
@@ -544,6 +726,8 @@ export function managerPage(env: Env): string {
       const typeInput = document.getElementById("rule-type");
       const roleInput = document.getElementById("role-id");
       const matchModeInput = document.getElementById("match-mode");
+      const groupKeyInput = document.getElementById("group-key");
+      const groupMatchModeInput = document.getElementById("group-match-mode");
       const chainInput = document.getElementById("chain-id");
       const tokenFields = document.getElementById("token-id-fields");
       const traitFields = document.getElementById("trait-fields");
@@ -558,6 +742,44 @@ export function managerPage(env: Env): string {
       const customChainForm = document.getElementById("custom-chain-form");
       const saveCustomChain = document.getElementById("save-custom-chain");
       const customChainResult = document.getElementById("custom-chain-result");
+      const indexerForm = document.getElementById("indexer-form");
+      const indexerChain = document.getElementById("indexer-chain");
+      const indexerUrl = document.getElementById("indexer-url");
+      const indexerHint = document.getElementById("indexer-hint");
+      const saveIndexer = document.getElementById("save-indexer");
+      const removeIndexer = document.getElementById("remove-indexer");
+      const indexerResult = document.getElementById("indexer-result");
+      const questForm = document.getElementById("quest-form");
+      const questKind = document.getElementById("quest-kind");
+      const questRole = document.getElementById("quest-role");
+      const saveQuest = document.getElementById("save-quest");
+      const questResult = document.getElementById("quest-result");
+      const questList = document.getElementById("quest-list");
+      const submissionArea = document.getElementById("submission-area");
+      const submissionList = document.getElementById("submission-list");
+      const questChannel = document.getElementById("quest-channel");
+      const saveQuestChannel = document.getElementById("save-quest-channel");
+      const questChannelResult = document.getElementById("quest-channel-result");
+      const rewardsChannel = document.getElementById("rewards-channel");
+      const saveRewardsChannel = document.getElementById("save-rewards-channel");
+      const rewardsChannelResult = document.getElementById("rewards-channel-result");
+      const raffleForm = document.getElementById("raffle-form");
+      const rafflePrizeRole = document.getElementById("raffle-prize-role");
+      const saveRaffle = document.getElementById("save-raffle");
+      const raffleResult = document.getElementById("raffle-result");
+      const raffleList = document.getElementById("raffle-list");
+      const storeForm = document.getElementById("store-form");
+      const storeRole = document.getElementById("store-role");
+      const saveStoreItem = document.getElementById("save-store-item");
+      const storeResult = document.getElementById("store-result");
+      const storeList = document.getElementById("store-list");
+      const purchaseList = document.getElementById("purchase-list");
+      const salesForm = document.getElementById("sales-form");
+      const salesChain = document.getElementById("sales-chain");
+      const salesChannel = document.getElementById("sales-channel");
+      const saveSalesWatch = document.getElementById("save-sales-watch");
+      const salesResult = document.getElementById("sales-result");
+      const salesList = document.getElementById("sales-list");
       const token = new URLSearchParams(location.search).get("token");
       let data;
 
@@ -641,11 +863,11 @@ export function managerPage(env: Env): string {
         document.getElementById("trait-name").required = !traitFields.hidden;
         document.getElementById("trait-value").required = !traitFields.hidden;
         document.getElementById("minimum").required = !minimumFields.hidden;
-        document.getElementById("asset-address-label").textContent = type === "spl-token" ? "Token or NFT mint address" : "Contract address";
+        document.getElementById("asset-address-label").textContent = type === "spl-token" ? "Token or NFT mint address" : type === "solana-collection" ? "Collection address" : "Contract address";
       }
 
       function syncNetworkForRequirement() {
-        const family = typeInput.value === "spl-token" ? "solana" : "evm";
+        const family = typeInput.value === "spl-token" || typeInput.value === "solana-collection" ? "solana" : "evm";
         const selected = data && data.chains.find((chain) => chain.id === chainInput.value);
         if (!selected || selected.family !== family) {
           const compatible = data && data.chains.find((chain) => chain.family === family);
@@ -658,7 +880,7 @@ export function managerPage(env: Env): string {
         const selected = data && data.chains.find((chain) => chain.id === chainInput.value);
         if (selected && selected.family === "solana") {
           typeInput.value = "spl-token";
-        } else if (selected && selected.family === "evm" && typeInput.value === "spl-token") {
+        } else if (selected && selected.family === "evm" && (typeInput.value === "spl-token" || typeInput.value === "solana-collection")) {
           typeInput.value = "erc721";
         }
         updateFields();
@@ -670,7 +892,32 @@ export function managerPage(env: Env): string {
         document.getElementById("reward-multiplier").value = existing
           ? String(existing.rewardMultiplier || 1)
           : "1";
+        syncGroupOptions();
       }
+
+      function syncGroupOptions() {
+        const datalist = document.getElementById("group-keys");
+        datalist.replaceChildren();
+        const keys = [...new Set((data.rules || [])
+          .filter((rule) => rule.roleId === roleInput.value && rule.groupKey)
+          .map((rule) => rule.groupKey))];
+        for (const key of keys) {
+          const option = document.createElement("option");
+          option.value = key;
+          datalist.append(option);
+        }
+        syncGroupMode();
+      }
+
+      function syncGroupMode() {
+        const key = groupKeyInput.value.trim();
+        const existing = (data.rules || []).find(
+          (rule) => rule.roleId === roleInput.value && (rule.groupKey || "") === key
+        );
+        groupMatchModeInput.value = existing ? existing.groupMatchMode : matchModeInput.value;
+      }
+
+      groupKeyInput.addEventListener("change", syncGroupMode);
 
       function renderOperations() {
         const operations = data.operations;
@@ -682,6 +929,12 @@ export function managerPage(env: Env): string {
         document.getElementById("metric-scheduled").textContent = operations.lastScheduledRun
           ? new Date(operations.lastScheduledRun).toLocaleString()
           : "Never";
+        const queueInfo = data.queue || { enabled: false, lastRunAt: null };
+        document.getElementById("metric-queue").textContent = !queueInfo.enabled
+          ? "Off"
+          : queueInfo.lastRunAt
+            ? new Date(queueInfo.lastRunAt).toLocaleString()
+            : "Waiting";
         const alert = document.getElementById("sync-alert");
         syncProblemArea.hidden = operations.syncProblems === 0;
         alert.textContent = operations.syncProblems === 1
@@ -718,6 +971,7 @@ export function managerPage(env: Env): string {
       function ruleSummary(rule) {
         const definition = rule.definition;
         if (definition.type === "spl-token") return "Hold " + definition.minAmount + " of Solana mint";
+        if (definition.type === "solana-collection") return "Own " + definition.minCount + " NFT(s) from Solana collection";
         if (definition.type === "erc721") return "Own " + definition.minCount + " NFT(s)";
         if (definition.type === "erc20") return "Hold " + definition.minAmount + " token(s)";
         if (definition.type === "erc721-trait") return "Own " + definition.minCount + " NFT(s) with " + definition.traitName + " = " + definition.traitValue;
@@ -780,22 +1034,54 @@ export function managerPage(env: Env): string {
           multiplierField.append(multiplierLabel, multiplier);
           header.append(title, modeField, multiplierField);
           group.append(header);
+          const byGroup = new Map();
           for (const rule of rules) {
-          const row = document.createElement("div");
-          row.className = "rule-row";
-          const copy = document.createElement("div");
-          const description = document.createElement("span");
-          description.textContent = ruleSummary(rule) + " on " + (chains.get(rule.chainId) || rule.chainId);
-          const address = document.createElement("span");
-          address.className = "muted";
-          address.textContent = rule.definition.contractAddress || rule.definition.mintAddress;
-          copy.append(description, address);
-          const remove = document.createElement("button");
-          remove.type = "button";
-          remove.dataset.ruleId = rule.id;
-          remove.textContent = "Remove";
-          row.append(copy, remove);
-          group.append(row);
+            const key = rule.groupKey || "";
+            const bucket = byGroup.get(key) || [];
+            bucket.push(rule);
+            byGroup.set(key, bucket);
+          }
+          for (const [groupKey, groupRules] of byGroup) {
+            const groupHeader = document.createElement("div");
+            groupHeader.className = "rule-group-header";
+            const groupTitle = document.createElement("span");
+            groupTitle.className = "muted";
+            groupTitle.textContent = "Group: " + (groupKey || "Main");
+            const groupModeField = document.createElement("div");
+            const groupModeLabel = document.createElement("label");
+            groupModeLabel.textContent = "Group requires";
+            const groupMode = document.createElement("select");
+            groupMode.dataset.groupMode = groupKey;
+            groupMode.dataset.roleId = roleId;
+            groupModeLabel.htmlFor = "group-mode-" + roleId + "-" + (groupKey || "main");
+            groupMode.id = groupModeLabel.htmlFor;
+            for (const optionData of [{ value: "any", label: "Any requirement" }, { value: "all", label: "All requirements" }]) {
+              const option = document.createElement("option");
+              option.value = optionData.value;
+              option.textContent = optionData.label;
+              groupMode.append(option);
+            }
+            groupMode.value = groupRules[0].groupMatchMode || "any";
+            groupModeField.append(groupModeLabel, groupMode);
+            groupHeader.append(groupTitle, groupModeField);
+            group.append(groupHeader);
+            for (const rule of groupRules) {
+            const row = document.createElement("div");
+            row.className = "rule-row";
+            const copy = document.createElement("div");
+            const description = document.createElement("span");
+            description.textContent = ruleSummary(rule) + " on " + (chains.get(rule.chainId) || rule.chainId);
+            const address = document.createElement("span");
+            address.className = "muted";
+            address.textContent = rule.definition.contractAddress || rule.definition.mintAddress || rule.definition.collectionAddress;
+            copy.append(description, address);
+            const remove = document.createElement("button");
+            remove.type = "button";
+            remove.dataset.ruleId = rule.id;
+            remove.textContent = "Remove";
+            row.append(copy, remove);
+            group.append(row);
+            }
           }
           list.append(group);
         }
@@ -846,6 +1132,8 @@ export function managerPage(env: Env): string {
           data.chains = data.chains.filter((chain) => chain.id !== saved.chain.id);
           data.chains.push(saved.chain);
           setOptions(chainInput, data.chains);
+          setOptions(indexerChain, data.chains.filter((chain) => chain.family !== "mock"));
+          renderIndexerForm();
           updateFields();
           customChainForm.reset();
           customChainResult.className = "success";
@@ -855,6 +1143,60 @@ export function managerPage(env: Env): string {
           customChainResult.textContent = error instanceof Error ? error.message : "Network could not be saved.";
         } finally {
           saveCustomChain.disabled = false;
+        }
+      });
+      function renderIndexerForm() {
+        const chain = data && data.chains.find((item) => item.id === indexerChain.value);
+        const existing = data && (data.indexers || []).find((item) => item.chainId === indexerChain.value);
+        if (chain) {
+          indexerHint.textContent = chain.family === "solana"
+            ? "Use a DAS-capable Solana RPC URL, for example a Helius endpoint like https://mainnet.helius-rpc.com/?api-key=YOUR-KEY."
+            : "Use an Alchemy NFT API URL for this network, for example https://eth-mainnet.g.alchemy.com/nft/v3/YOUR-KEY.";
+        }
+        indexerUrl.value = existing ? existing.url : "";
+        removeIndexer.hidden = !existing;
+      }
+      indexerChain.addEventListener("change", renderIndexerForm);
+      indexerForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        saveIndexer.disabled = true;
+        indexerResult.className = "";
+        indexerResult.textContent = "Saving indexer...";
+        try {
+          const saved = await api("chain-indexer", {
+            method: "PUT",
+            body: JSON.stringify({ chainId: indexerChain.value, url: indexerUrl.value.trim() })
+          });
+          data.indexers = (data.indexers || []).filter((item) => item.chainId !== saved.indexer.chainId);
+          data.indexers.push(saved.indexer);
+          renderIndexerForm();
+          indexerResult.className = "success";
+          indexerResult.textContent = "Indexer saved. New and refreshed holder checks will use it.";
+        } catch (error) {
+          indexerResult.className = "error";
+          indexerResult.textContent = error instanceof Error ? error.message : "Indexer could not be saved.";
+        } finally {
+          saveIndexer.disabled = false;
+        }
+      });
+      removeIndexer.addEventListener("click", async () => {
+        removeIndexer.disabled = true;
+        indexerResult.className = "";
+        indexerResult.textContent = "Removing indexer...";
+        try {
+          await api("chain-indexer", {
+            method: "DELETE",
+            body: JSON.stringify({ chainId: indexerChain.value })
+          });
+          data.indexers = (data.indexers || []).filter((item) => item.chainId !== indexerChain.value);
+          renderIndexerForm();
+          indexerResult.className = "success";
+          indexerResult.textContent = "Indexer removed. Free direct network checks are back in use.";
+        } catch (error) {
+          indexerResult.className = "error";
+          indexerResult.textContent = error instanceof Error ? error.message : "Indexer could not be removed.";
+        } finally {
+          removeIndexer.disabled = false;
         }
       });
       function accentTextColor(color) {
@@ -1056,7 +1398,8 @@ export function managerPage(env: Env): string {
             body: JSON.stringify({
               currencyName: document.getElementById("currency-name").value,
               dailyClaimAmount: document.getElementById("daily-amount").value,
-              holderDailyAmount: document.getElementById("holder-daily-amount").value
+              holderDailyAmount: document.getElementById("holder-daily-amount").value,
+              tipDailyLimit: document.getElementById("tip-daily-limit").value
             })
           });
           data.rewards = saved.rewards;
@@ -1087,11 +1430,16 @@ export function managerPage(env: Env): string {
             traitName: value("trait-name"),
             traitValue: value("trait-value"),
             matchMode: matchModeInput.value,
-            rewardMultiplier: value("reward-multiplier")
+            rewardMultiplier: value("reward-multiplier"),
+            groupKey: groupKeyInput.value.trim() || undefined,
+            groupMatchMode: groupMatchModeInput.value
           };
           const saved = await api("rules", { method: "POST", body: JSON.stringify(payload) });
           for (const existing of data.rules) {
             if (existing.roleId === saved.rule.roleId) existing.matchMode = saved.rule.matchMode;
+            if (existing.roleId === saved.rule.roleId && (existing.groupKey || "") === (saved.rule.groupKey || "")) {
+              existing.groupMatchMode = saved.rule.groupMatchMode;
+            }
           }
           data.rules.push(saved.rule);
           renderRules();
@@ -1151,6 +1499,36 @@ export function managerPage(env: Env): string {
           }
           return;
         }
+        const groupSelect = event.target.closest("select[data-group-mode]");
+        if (groupSelect) {
+          groupSelect.disabled = true;
+          result.className = "";
+          result.textContent = "Saving group requirements...";
+          try {
+            const saved = await api("group-mode", {
+              method: "PUT",
+              body: JSON.stringify({
+                roleId: groupSelect.dataset.roleId,
+                groupKey: groupSelect.dataset.groupMode,
+                matchMode: groupSelect.value
+              })
+            });
+            for (const rule of data.rules) {
+              if (rule.roleId === saved.roleId && (rule.groupKey || "") === saved.groupKey) {
+                rule.groupMatchMode = saved.matchMode;
+              }
+            }
+            result.className = "success";
+            result.textContent = "Group requirements updated.";
+          } catch (error) {
+            result.className = "error";
+            result.textContent = error instanceof Error ? error.message : "Group requirements could not be updated.";
+            renderRules();
+          } finally {
+            groupSelect.disabled = false;
+          }
+          return;
+        }
         const select = event.target.closest("select[data-role-mode]");
         if (!select) return;
         select.disabled = true;
@@ -1176,17 +1554,588 @@ export function managerPage(env: Env): string {
         }
       });
 
+      function updateQuestFields() {
+        const kind = questKind.value;
+        document.getElementById("quest-role-field").hidden = kind !== "hold_role";
+        document.getElementById("quest-days-field").hidden = kind !== "daily_claims";
+        document.getElementById("quest-code-field").hidden = kind !== "code";
+        document.getElementById("quest-instructions-field").hidden = kind !== "custom";
+        questRole.required = kind === "hold_role";
+        document.getElementById("quest-days").required = kind === "daily_claims";
+        document.getElementById("quest-code").required = kind === "code";
+        document.getElementById("quest-instructions").required = kind === "custom";
+      }
+
+      function setQuestChannelOptions() {
+        questChannel.replaceChildren();
+        const prompt = document.createElement("option");
+        prompt.value = "";
+        prompt.textContent = data.channels && data.channels.length
+          ? "Choose a channel"
+          : "No text channels available";
+        questChannel.append(prompt);
+        for (const channel of data.channels || []) {
+          const option = document.createElement("option");
+          option.value = channel.id;
+          option.textContent = "#" + channel.name;
+          questChannel.append(option);
+        }
+        questChannel.value = data.questChannel?.channelId || "";
+      }
+
+      saveQuestChannel.addEventListener("click", async () => {
+        if (!questChannel.value) {
+          questChannelResult.className = "error";
+          questChannelResult.textContent = "Choose a Discord channel.";
+          return;
+        }
+        saveQuestChannel.disabled = true;
+        questChannelResult.className = "";
+        questChannelResult.textContent = "Publishing the Quest panel...";
+        try {
+          const saved = await api("quest-channel", {
+            method: "POST",
+            body: JSON.stringify({ channelId: questChannel.value })
+          });
+          data.questChannel = saved.questChannel;
+          questChannelResult.className = "success";
+          questChannelResult.textContent = "Panel published. New quests will be announced automatically.";
+        } catch (error) {
+          questChannelResult.className = "error";
+          questChannelResult.textContent = error instanceof Error ? error.message : "The Quest panel could not be published.";
+        } finally {
+          saveQuestChannel.disabled = false;
+        }
+      });
+
+      function questSummary(quest) {
+        if (quest.kind === "link_wallet") return "Link a wallet";
+        if (quest.kind === "hold_role") {
+          const role = data.roles.find((candidate) => candidate.id === quest.config.roleId);
+          return "Hold role " + (role ? role.name : quest.config.roleId);
+        }
+        if (quest.kind === "daily_claims") return "Claim daily rewards on " + quest.config.days + " days";
+        if (quest.kind === "custom") return "Custom: " + quest.config.instructions;
+        return "Secret code";
+      }
+
+      function renderQuests() {
+        questList.replaceChildren();
+        if (!data.quests || !data.quests.length) {
+          const empty = document.createElement("p");
+          empty.className = "muted";
+          empty.textContent = "No quests yet. Members see them with /quests.";
+          questList.append(empty);
+          return;
+        }
+        for (const quest of data.quests) {
+          const row = document.createElement("div");
+          row.className = "rule-row";
+          const copy = document.createElement("div");
+          const description = document.createElement("span");
+          description.textContent = quest.title + " - " + quest.reward.toLocaleString() + " points";
+          const detail = document.createElement("span");
+          detail.className = "muted";
+          detail.textContent = questSummary(quest);
+          copy.append(description, detail);
+          const remove = document.createElement("button");
+          remove.type = "button";
+          remove.dataset.questId = quest.id;
+          remove.textContent = "Remove";
+          row.append(copy, remove);
+          questList.append(row);
+        }
+      }
+
+      questKind.addEventListener("change", updateQuestFields);
+      questForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        saveQuest.disabled = true;
+        questResult.className = "";
+        questResult.textContent = "Adding quest...";
+        try {
+          const body = {
+            title: document.getElementById("quest-title").value.trim(),
+            kind: questKind.value,
+            reward: document.getElementById("quest-reward").value
+          };
+          if (questKind.value === "hold_role") body.roleId = questRole.value;
+          if (questKind.value === "daily_claims") body.days = document.getElementById("quest-days").value;
+          if (questKind.value === "code") body.code = document.getElementById("quest-code").value;
+          if (questKind.value === "custom") body.instructions = document.getElementById("quest-instructions").value.trim();
+          const saved = await api("quests", { method: "POST", body: JSON.stringify(body) });
+          data.quests = (data.quests || []).concat(saved.quest);
+          renderQuests();
+          questForm.reset();
+          updateQuestFields();
+          questResult.className = "success";
+          questResult.textContent = saved.announcementWarning
+            ? "Quest added, but the announcement needs attention: " + saved.announcementWarning
+            : saved.announcementPosted
+              ? "Quest added and announced in the Quest channel."
+              : "Quest added. Choose a Quest channel to announce future quests.";
+        } catch (error) {
+          questResult.className = "error";
+          questResult.textContent = error instanceof Error ? error.message : "Quest could not be added.";
+        } finally {
+          saveQuest.disabled = false;
+        }
+      });
+
+      questList.addEventListener("click", async (event) => {
+        const button = event.target.closest("button[data-quest-id]");
+        if (!button) return;
+        button.disabled = true;
+        try {
+          await api("quests/" + encodeURIComponent(button.dataset.questId), { method: "DELETE" });
+          data.quests = data.quests.filter((quest) => quest.id !== button.dataset.questId);
+          renderQuests();
+        } catch (error) {
+          questResult.className = "error";
+          questResult.textContent = error instanceof Error ? error.message : "Quest could not be removed.";
+          button.disabled = false;
+        }
+      });
+
+      function renderSubmissions() {
+        const submissions = data.pendingSubmissions || [];
+        submissionArea.hidden = submissions.length === 0;
+        submissionList.replaceChildren();
+        for (const submission of submissions) {
+          const row = document.createElement("div");
+          row.className = "rule-row";
+          const copy = document.createElement("div");
+          const description = document.createElement("span");
+          description.textContent = submission.questTitle + " - " + submission.reward.toLocaleString() + " points - member ..." + submission.discordUserId.slice(-6);
+          const proof = document.createElement("span");
+          proof.className = "muted";
+          proof.textContent = submission.proof;
+          copy.append(description, proof);
+          const approve = document.createElement("button");
+          approve.type = "button";
+          approve.dataset.submissionApprove = submission.id;
+          approve.textContent = "Approve";
+          const reject = document.createElement("button");
+          reject.type = "button";
+          reject.dataset.submissionReject = submission.id;
+          reject.textContent = "Reject";
+          row.append(copy, approve, reject);
+          submissionList.append(row);
+        }
+      }
+
+      submissionList.addEventListener("click", async (event) => {
+        const approveButton = event.target.closest("button[data-submission-approve]");
+        const rejectButton = event.target.closest("button[data-submission-reject]");
+        const button = approveButton || rejectButton;
+        if (!button) return;
+        button.disabled = true;
+        const id = approveButton ? button.dataset.submissionApprove : button.dataset.submissionReject;
+        try {
+          await api("quest-submissions/" + encodeURIComponent(id) + (approveButton ? "/approve" : "/reject"), {
+            method: "POST",
+            body: "{}"
+          });
+          data.pendingSubmissions = (data.pendingSubmissions || []).filter(
+            (submission) => submission.id !== id
+          );
+          renderSubmissions();
+          questResult.className = "success";
+          questResult.textContent = approveButton ? "Proof approved and reward paid." : "Proof rejected; the member can submit again.";
+        } catch (error) {
+          questResult.className = "error";
+          questResult.textContent = error instanceof Error ? error.message : "The review could not be saved.";
+          button.disabled = false;
+        }
+      });
+
+      function setPrizeRoleOptions() {
+        rafflePrizeRole.replaceChildren();
+        const none = document.createElement("option");
+        none.value = "";
+        none.textContent = "None (manager fulfills the prize)";
+        rafflePrizeRole.append(none);
+        for (const role of data.roles) {
+          const option = document.createElement("option");
+          option.value = role.id;
+          option.textContent = role.name;
+          rafflePrizeRole.append(option);
+        }
+      }
+
+      function setRewardsChannelOptions() {
+        rewardsChannel.replaceChildren();
+        const prompt = document.createElement("option");
+        prompt.value = "";
+        prompt.textContent = data.channels && data.channels.length
+          ? "Choose a channel"
+          : "No text channels available";
+        rewardsChannel.append(prompt);
+        for (const channel of data.channels || []) {
+          const option = document.createElement("option");
+          option.value = channel.id;
+          option.textContent = "#" + channel.name;
+          rewardsChannel.append(option);
+        }
+        rewardsChannel.value = data.rewardsChannel?.channelId || "";
+      }
+
+      saveRewardsChannel.addEventListener("click", async () => {
+        if (!rewardsChannel.value) {
+          rewardsChannelResult.className = "error";
+          rewardsChannelResult.textContent = "Choose a Discord channel.";
+          return;
+        }
+        saveRewardsChannel.disabled = true;
+        rewardsChannelResult.className = "";
+        rewardsChannelResult.textContent = "Publishing the Store and Raffle panels...";
+        try {
+          const saved = await api("rewards-channel", {
+            method: "POST",
+            body: JSON.stringify({ channelId: rewardsChannel.value })
+          });
+          data.rewardsChannel = saved.rewardsChannel;
+          rewardsChannelResult.className = "success";
+          rewardsChannelResult.textContent = "Panels published. New store items and raffles will be announced automatically.";
+        } catch (error) {
+          rewardsChannelResult.className = "error";
+          rewardsChannelResult.textContent = error instanceof Error ? error.message : "The panels could not be published.";
+        } finally {
+          saveRewardsChannel.disabled = false;
+        }
+      });
+
+      function renderRaffles() {
+        raffleList.replaceChildren();
+        if (!data.raffles || !data.raffles.length) {
+          const empty = document.createElement("p");
+          empty.className = "muted";
+          empty.textContent = "No raffles yet. Members see them with /raffle list.";
+          raffleList.append(empty);
+          return;
+        }
+        for (const raffle of data.raffles) {
+          const row = document.createElement("div");
+          row.className = "rule-row";
+          const copy = document.createElement("div");
+          const description = document.createElement("span");
+          description.textContent = raffle.title + " - prize: " + raffle.prize;
+          const detail = document.createElement("span");
+          detail.className = "muted";
+          if (raffle.status === "open") {
+            detail.textContent = "Open - " + raffle.entryCost.toLocaleString() + " points/entry - " + raffle.totalEntries.toLocaleString() + " entries - id " + raffle.id.slice(0, 8);
+          } else if (raffle.status === "drawn") {
+            detail.textContent = "Drawn - winner ..." + String(raffle.winnerDiscordUserId).slice(-6) + " - " + raffle.totalEntries.toLocaleString() + " entries";
+          } else {
+            detail.textContent = "Cancelled - entries refunded";
+          }
+          copy.append(description, detail);
+          row.append(copy);
+          if (raffle.status === "open") {
+            const draw = document.createElement("button");
+            draw.type = "button";
+            draw.dataset.raffleDraw = raffle.id;
+            draw.textContent = "Draw winner";
+            const cancel = document.createElement("button");
+            cancel.type = "button";
+            cancel.dataset.raffleCancel = raffle.id;
+            cancel.textContent = "Cancel + refund";
+            row.append(draw, cancel);
+          }
+          raffleList.append(row);
+        }
+      }
+
+      raffleForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        saveRaffle.disabled = true;
+        raffleResult.className = "";
+        raffleResult.textContent = "Opening raffle...";
+        try {
+          const saved = await api("raffles", {
+            method: "POST",
+            body: JSON.stringify({
+              title: document.getElementById("raffle-title").value.trim(),
+              prize: document.getElementById("raffle-prize").value.trim(),
+              prizeRoleId: rafflePrizeRole.value || undefined,
+              entryCost: document.getElementById("raffle-cost").value,
+              maxEntriesPerMember: document.getElementById("raffle-max-entries").value
+            })
+          });
+          data.raffles = (data.raffles || []).concat(saved.raffle);
+          renderRaffles();
+          raffleForm.reset();
+          raffleResult.className = "success";
+          raffleResult.textContent = saved.announcementWarning
+            ? "Raffle opened, but the announcement needs attention: " + saved.announcementWarning
+            : saved.announcementPosted
+              ? "Raffle open and announced in the Store and Raffle channel."
+              : "Raffle open. Choose a Store and Raffle channel to announce future raffles.";
+        } catch (error) {
+          raffleResult.className = "error";
+          raffleResult.textContent = error instanceof Error ? error.message : "Raffle could not be opened.";
+        } finally {
+          saveRaffle.disabled = false;
+        }
+      });
+
+      raffleList.addEventListener("click", async (event) => {
+        const drawButton = event.target.closest("button[data-raffle-draw]");
+        const cancelButton = event.target.closest("button[data-raffle-cancel]");
+        const button = drawButton || cancelButton;
+        if (!button) return;
+        button.disabled = true;
+        raffleResult.className = "";
+        raffleResult.textContent = drawButton ? "Drawing a winner..." : "Cancelling and refunding...";
+        try {
+          const id = drawButton ? button.dataset.raffleDraw : button.dataset.raffleCancel;
+          const action = drawButton ? "draw" : "cancel";
+          const outcome = await api("raffles/" + encodeURIComponent(id) + "/" + action, { method: "POST", body: "{}" });
+          const raffle = data.raffles.find((candidate) => candidate.id === id || candidate.id.startsWith(id));
+          if (drawButton) {
+            if (raffle) {
+              raffle.status = "drawn";
+              raffle.winnerDiscordUserId = outcome.winnerDiscordUserId;
+            }
+            raffleResult.className = "success";
+            raffleResult.textContent = "Winner: ..." + String(outcome.winnerDiscordUserId).slice(-6) + (outcome.roleGranted ? " (prize role granted)" : " (fulfill the prize manually)");
+          } else {
+            if (raffle) raffle.status = "cancelled";
+            raffleResult.className = "success";
+            raffleResult.textContent = "Raffle cancelled; " + outcome.refundedPoints.toLocaleString() + " points refunded to " + outcome.refundedMembers + " member(s).";
+          }
+          renderRaffles();
+        } catch (error) {
+          raffleResult.className = "error";
+          raffleResult.textContent = error instanceof Error ? error.message : "The raffle action failed.";
+          button.disabled = false;
+        }
+      });
+
+      function setStoreRoleOptions() {
+        storeRole.replaceChildren();
+        const none = document.createElement("option");
+        none.value = "";
+        none.textContent = "None (manager fulfills the purchase)";
+        storeRole.append(none);
+        for (const role of data.roles) {
+          const option = document.createElement("option");
+          option.value = role.id;
+          option.textContent = role.name;
+          storeRole.append(option);
+        }
+      }
+
+      function renderStoreItems() {
+        storeList.replaceChildren();
+        if (!data.storeItems || !data.storeItems.length) {
+          const empty = document.createElement("p");
+          empty.className = "muted";
+          empty.textContent = "No store items yet. Members see them with /store list.";
+          storeList.append(empty);
+          return;
+        }
+        for (const item of data.storeItems) {
+          const row = document.createElement("div");
+          row.className = "rule-row";
+          const copy = document.createElement("div");
+          const description = document.createElement("span");
+          description.textContent = item.title + " - " + item.price.toLocaleString() + " points";
+          const detail = document.createElement("span");
+          detail.className = "muted";
+          const stock = item.stock === null ? "unlimited stock" : item.stock + " left";
+          const memberLimit = item.purchaseLimitPerMember === null
+            ? "unlimited per member"
+            : "maximum " + item.purchaseLimitPerMember.toLocaleString() + " per member";
+          detail.textContent = stock + " - " + memberLimit + " - " + item.sold.toLocaleString() + " sold - id " + item.id.slice(0, 8) + (item.description ? " - " + item.description : "");
+          copy.append(description, detail);
+          const remove = document.createElement("button");
+          remove.type = "button";
+          remove.dataset.storeItemId = item.id;
+          remove.textContent = "Remove";
+          row.append(copy, remove);
+          storeList.append(row);
+        }
+      }
+
+      function renderPurchases() {
+        purchaseList.replaceChildren();
+        if (!data.recentPurchases || !data.recentPurchases.length) {
+          const empty = document.createElement("p");
+          empty.className = "muted";
+          empty.textContent = "No purchases yet.";
+          purchaseList.append(empty);
+          return;
+        }
+        for (const purchase of data.recentPurchases) {
+          const row = document.createElement("div");
+          row.className = "activity-row";
+          const copy = document.createElement("div");
+          const description = document.createElement("span");
+          description.textContent = purchase.itemTitle + " - " + purchase.pricePaid.toLocaleString() + " points";
+          const buyer = document.createElement("span");
+          buyer.className = "muted";
+          buyer.textContent = "member ..." + purchase.discordUserId.slice(-6);
+          copy.append(description, buyer);
+          const time = document.createElement("time");
+          time.dateTime = purchase.createdAt;
+          time.textContent = new Date(purchase.createdAt.replace(" ", "T") + "Z").toLocaleString();
+          row.append(copy, time);
+          purchaseList.append(row);
+        }
+      }
+
+      storeForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        saveStoreItem.disabled = true;
+        storeResult.className = "";
+        storeResult.textContent = "Adding item...";
+        try {
+          const saved = await api("store-items", {
+            method: "POST",
+            body: JSON.stringify({
+              title: document.getElementById("store-title").value.trim(),
+              description: document.getElementById("store-description").value.trim() || undefined,
+              price: document.getElementById("store-price").value,
+              roleId: storeRole.value || undefined,
+              stock: document.getElementById("store-stock").value || undefined,
+              purchaseLimitPerMember: document.getElementById("store-purchase-limit").value || undefined
+            })
+          });
+          data.storeItems = (data.storeItems || []).concat(saved.item);
+          renderStoreItems();
+          storeForm.reset();
+          storeResult.className = "success";
+          storeResult.textContent = saved.announcementWarning
+            ? "Item added, but the announcement needs attention: " + saved.announcementWarning
+            : saved.announcementPosted
+              ? "Item added and announced in the Store and Raffle channel."
+              : "Item added. Choose a Store and Raffle channel to announce future items.";
+        } catch (error) {
+          storeResult.className = "error";
+          storeResult.textContent = error instanceof Error ? error.message : "Item could not be added.";
+        } finally {
+          saveStoreItem.disabled = false;
+        }
+      });
+
+      storeList.addEventListener("click", async (event) => {
+        const button = event.target.closest("button[data-store-item-id]");
+        if (!button) return;
+        button.disabled = true;
+        try {
+          await api("store-items/" + encodeURIComponent(button.dataset.storeItemId), { method: "DELETE" });
+          data.storeItems = data.storeItems.filter((item) => item.id !== button.dataset.storeItemId);
+          renderStoreItems();
+        } catch (error) {
+          storeResult.className = "error";
+          storeResult.textContent = error instanceof Error ? error.message : "Item could not be removed.";
+          button.disabled = false;
+        }
+      });
+
+      function renderSalesWatches() {
+        salesList.replaceChildren();
+        if (!data.salesWatches || !data.salesWatches.length) {
+          const empty = document.createElement("p");
+          empty.className = "muted";
+          empty.textContent = "No collections watched yet.";
+          salesList.append(empty);
+          return;
+        }
+        const chainNames = new Map(data.chains.map((chain) => [chain.id, chain.name]));
+        const channelNames = new Map((data.channels || []).map((channel) => [channel.id, channel.name]));
+        for (const watch of data.salesWatches) {
+          const row = document.createElement("div");
+          row.className = "rule-row";
+          const copy = document.createElement("div");
+          const description = document.createElement("span");
+          description.textContent = (chainNames.get(watch.chainId) || watch.chainId) + " - " + watch.contractAddress.slice(0, 10) + "...";
+          const detail = document.createElement("span");
+          detail.className = "muted";
+          detail.textContent = watch.lastError
+            ? "Needs attention: " + watch.lastError
+            : "Posting to #" + (channelNames.get(watch.channelId) || watch.channelId);
+          copy.append(description, detail);
+          const remove = document.createElement("button");
+          remove.type = "button";
+          remove.dataset.salesWatchId = watch.id;
+          remove.textContent = "Remove";
+          row.append(copy, remove);
+          salesList.append(row);
+        }
+      }
+
+      salesForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        saveSalesWatch.disabled = true;
+        salesResult.className = "";
+        salesResult.textContent = "Adding watch...";
+        try {
+          const saved = await api("sales-watches", {
+            method: "POST",
+            body: JSON.stringify({
+              chainId: salesChain.value,
+              contractAddress: document.getElementById("sales-contract").value.trim(),
+              channelId: salesChannel.value
+            })
+          });
+          data.salesWatches = (data.salesWatches || []).concat(saved.watch);
+          renderSalesWatches();
+          salesForm.reset();
+          salesResult.className = "success";
+          salesResult.textContent = "Watching. The first check runs with the next scheduled pass and only new sales are posted.";
+        } catch (error) {
+          salesResult.className = "error";
+          salesResult.textContent = error instanceof Error ? error.message : "The collection could not be watched.";
+        } finally {
+          saveSalesWatch.disabled = false;
+        }
+      });
+
+      salesList.addEventListener("click", async (event) => {
+        const button = event.target.closest("button[data-sales-watch-id]");
+        if (!button) return;
+        button.disabled = true;
+        try {
+          await api("sales-watches/" + encodeURIComponent(button.dataset.salesWatchId), { method: "DELETE" });
+          data.salesWatches = data.salesWatches.filter((watch) => watch.id !== button.dataset.salesWatchId);
+          renderSalesWatches();
+        } catch (error) {
+          salesResult.className = "error";
+          salesResult.textContent = error instanceof Error ? error.message : "The watch could not be removed.";
+          button.disabled = false;
+        }
+      });
+
       async function initialize() {
         if (!token) throw new Error("This manager link is invalid or incomplete.");
         data = await api("session");
         setOptions(roleInput, data.roles);
         setOptions(chainInput, data.chains);
+        setOptions(indexerChain, data.chains.filter((chain) => chain.family !== "mock"));
+        setOptions(questRole, data.roles);
+        setQuestChannelOptions();
+        renderIndexerForm();
+        updateQuestFields();
+        renderQuests();
+        renderSubmissions();
+        setRewardsChannelOptions();
+        setPrizeRoleOptions();
+        renderRaffles();
+        setStoreRoleOptions();
+        renderStoreItems();
+        renderPurchases();
+        setOptions(salesChain, data.chains.filter((chain) => chain.family === "evm"));
+        setOptions(salesChannel, data.channels || []);
+        renderSalesWatches();
         syncMatchModeForRole();
         document.getElementById("community-name").value = data.branding.name;
         document.getElementById("accent-color").value = data.branding.accentColor;
         document.getElementById("currency-name").value = data.rewards.currencyName;
         document.getElementById("daily-amount").value = data.rewards.dailyClaimAmount;
         document.getElementById("holder-daily-amount").value = data.rewards.holderDailyAmount;
+        document.getElementById("tip-daily-limit").value = data.rewards.tipDailyLimit;
         fullWalletAddresses.checked = data.privacy.managersCanViewFullAddresses;
         renderCurrencyIcon();
         renderBrandLogo();
@@ -1209,6 +2158,253 @@ export function managerPage(env: Env): string {
         status.className = "status problem";
         status.textContent = error instanceof Error ? error.message : "The private manager could not be opened.";
       });
+    </script>`
+  );
+}
+
+export function memberRewardsPage(env: Env): string {
+  const appName = escapeHtml(env.APP_NAME);
+  return page(
+    `${appName} Community Rewards`,
+    `<header><strong id="community-name">${appName}</strong></header>
+    <main>
+      <div class="brand-heading">
+        <img id="currency-icon" class="currency-icon" alt="" hidden>
+        <div>
+          <h1>Community rewards</h1>
+          <div id="status" class="status pending">Opening your private rewards page...</div>
+        </div>
+      </div>
+      <div id="member-content" hidden>
+        <div class="panel">
+          <strong id="balance" style="font-size: 22px"></strong>
+          <span class="muted">Your current balance</span>
+          <div class="button-row" aria-label="Reward sections">
+            <button type="button" class="secondary" data-view="quests">Quests</button>
+            <button type="button" class="secondary" data-view="store">Store</button>
+            <button type="button" class="secondary" data-view="raffles">Raffles</button>
+          </div>
+        </div>
+        <div id="result" class="panel" aria-live="polite"></div>
+        <section id="quests-section" class="panel" hidden>
+          <h2>Quests</h2>
+          <div id="quests-list" class="rule-list"></div>
+        </section>
+        <section id="store-section" class="panel" hidden>
+          <h2>Store</h2>
+          <div id="store-list" class="rule-list"></div>
+        </section>
+        <section id="raffles-section" class="panel" hidden>
+          <h2>Raffles</h2>
+          <div id="raffles-list" class="rule-list"></div>
+        </section>
+      </div>
+    </main>
+    <script>
+      const params = new URLSearchParams(window.location.search);
+      const suppliedToken = params.get("token");
+      if (suppliedToken) sessionStorage.setItem("memberRewardsToken", suppliedToken);
+      const token = suppliedToken || sessionStorage.getItem("memberRewardsToken") || "";
+      const requestedView = ["quests", "store", "raffles"].includes(params.get("view"))
+        ? params.get("view")
+        : "quests";
+      if (suppliedToken) history.replaceState(null, "", "/rewards?view=" + requestedView);
+
+      const status = document.getElementById("status");
+      const content = document.getElementById("member-content");
+      const result = document.getElementById("result");
+      let data;
+      let currentView = requestedView;
+
+      async function api(path, options = {}) {
+        const response = await fetch("/api/member/" + path, {
+          ...options,
+          headers: {
+            Authorization: "Bearer " + token,
+            ...(options.body ? { "Content-Type": "application/json" } : {})
+          }
+        });
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.error || "This action could not be completed.");
+        return body;
+      }
+
+      function showResult(message, problem = false) {
+        result.style.display = "block";
+        result.className = "panel " + (problem ? "error" : "success");
+        result.textContent = message;
+      }
+
+      function emptyRow(message) {
+        const row = document.createElement("p");
+        row.className = "muted";
+        row.textContent = message;
+        return row;
+      }
+
+      function actionRow(title, detail) {
+        const row = document.createElement("div");
+        row.className = "rule-row";
+        const copy = document.createElement("div");
+        const heading = document.createElement("strong");
+        heading.textContent = title;
+        const description = document.createElement("span");
+        description.className = "muted";
+        description.textContent = detail;
+        copy.append(heading, description);
+        const actions = document.createElement("div");
+        actions.className = "member-actions";
+        row.append(copy, actions);
+        return { row, actions };
+      }
+
+      function renderQuests() {
+        const list = document.getElementById("quests-list");
+        list.replaceChildren();
+        if (!data.quests.length) return list.append(emptyRow("There are no quests available right now."));
+        for (const quest of data.quests) {
+          const state = quest.completed ? "Completed" : quest.pendingSubmission ? "Waiting for manager review" : quest.reward.toLocaleString() + " " + data.rewards.currencyName;
+          const { row, actions } = actionRow(quest.title, state);
+          if (!quest.completed && !quest.pendingSubmission) {
+            if (quest.kind === "code") {
+              const input = document.createElement("input");
+              input.placeholder = "Secret code";
+              input.maxLength = 100;
+              const button = document.createElement("button");
+              button.type = "button";
+              button.textContent = "Submit code";
+              button.addEventListener("click", () => runAction(button, "quests/code", { code: input.value }, "Code submitted."));
+              actions.append(input, button);
+            } else if (quest.kind === "custom") {
+              const input = document.createElement("textarea");
+              input.placeholder = quest.config.instructions || "Paste your proof link or description";
+              input.maxLength = 400;
+              const button = document.createElement("button");
+              button.type = "button";
+              button.textContent = "Submit proof";
+              button.addEventListener("click", () => runAction(button, "quests/" + encodeURIComponent(quest.id) + "/proof", { proof: input.value }, "Proof sent for manager review."));
+              actions.append(input, button);
+            } else {
+              const button = document.createElement("button");
+              button.type = "button";
+              button.textContent = "Check quest";
+              button.addEventListener("click", () => runAction(button, "quests/" + encodeURIComponent(quest.id) + "/check", {}, "Quest checked."));
+              actions.append(button);
+            }
+          }
+          list.append(row);
+        }
+      }
+
+      function renderStore() {
+        const list = document.getElementById("store-list");
+        list.replaceChildren();
+        if (!data.storeItems.length) return list.append(emptyRow("There are no store items available right now."));
+        for (const item of data.storeItems) {
+          const stock = item.stock === null ? "Unlimited" : item.stock.toLocaleString() + " remaining";
+          const memberLimit = item.purchaseLimitPerMember === null
+            ? "No per-member limit"
+            : "You bought " + item.memberPurchases.toLocaleString() + " of " + item.purchaseLimitPerMember.toLocaleString();
+          const atMemberLimit = item.purchaseLimitPerMember !== null && item.memberPurchases >= item.purchaseLimitPerMember;
+          const { row, actions } = actionRow(item.title, item.description + (item.description ? " - " : "") + item.price.toLocaleString() + " " + data.rewards.currencyName + " - " + stock + " - " + memberLimit);
+          const button = document.createElement("button");
+          button.type = "button";
+          button.textContent = item.stock === 0 ? "Sold out" : atMemberLimit ? "Limit reached" : "Buy";
+          button.disabled = item.stock === 0 || atMemberLimit;
+          button.addEventListener("click", () =>
+            runAction(button, "store/" + encodeURIComponent(item.id) + "/buy", {}, "Purchase complete.")
+          );
+          actions.append(button);
+          list.append(row);
+        }
+      }
+
+      function renderRaffles() {
+        const list = document.getElementById("raffles-list");
+        list.replaceChildren();
+        if (!data.raffles.length) return list.append(emptyRow("There are no open raffles right now."));
+        for (const raffle of data.raffles) {
+          const detail = raffle.prize + " - " + raffle.entryCost.toLocaleString() + " " + data.rewards.currencyName + " per entry - You have " + raffle.memberEntries.toLocaleString();
+          const { row, actions } = actionRow(raffle.title, detail);
+          const input = document.createElement("input");
+          input.type = "number";
+          input.min = "1";
+          input.max = String(Math.min(100, raffle.maxEntriesPerMember - raffle.memberEntries));
+          input.value = "1";
+          const button = document.createElement("button");
+          button.type = "button";
+          button.textContent = "Enter raffle";
+          button.disabled = raffle.memberEntries >= raffle.maxEntriesPerMember;
+          button.addEventListener("click", () => {
+            const count = Number(input.value);
+            runAction(button, "raffles/" + encodeURIComponent(raffle.id) + "/enter", { count }, "Raffle entry added.");
+          });
+          actions.append(input, button);
+          list.append(row);
+        }
+      }
+
+      function showView(view) {
+        currentView = view;
+        history.replaceState(null, "", "/rewards?view=" + view);
+        for (const name of ["quests", "store", "raffles"]) {
+          document.getElementById(name + "-section").hidden = name !== view;
+          const button = document.querySelector('[data-view="' + name + '"]');
+          button.className = name === view ? "" : "secondary";
+        }
+      }
+
+      async function load() {
+        data = await api("session");
+        document.documentElement.style.setProperty("--accent", data.branding.accentColor);
+        document.getElementById("community-name").textContent = data.branding.name;
+        document.getElementById("balance").textContent = data.balance.toLocaleString() + " " + data.rewards.currencyName;
+        const icon = document.getElementById("currency-icon");
+        icon.src = "/assets/currency/" + data.guildId;
+        icon.onload = () => { icon.hidden = false; };
+        icon.onerror = () => { icon.hidden = true; };
+        renderQuests();
+        renderStore();
+        renderRaffles();
+        showView(currentView);
+        status.className = "status";
+        status.textContent = "Private rewards page is ready";
+        content.hidden = false;
+      }
+
+      async function runAction(button, path, body, successMessage) {
+        button.disabled = true;
+        try {
+          const outcome = await api(path, { method: "POST", body: JSON.stringify(body) });
+          const message = outcome.result === "not_met"
+            ? "That quest requirement has not been met yet."
+            : outcome.result === "already_completed"
+              ? "You already completed that quest."
+              : outcome.result === "no_match"
+                ? "That code did not match an available quest."
+                : successMessage;
+          showResult(message);
+          await load();
+        } catch (error) {
+          showResult(error instanceof Error ? error.message : "This action could not be completed.", true);
+        } finally {
+          button.disabled = false;
+        }
+      }
+
+      document.querySelectorAll("[data-view]").forEach((button) => {
+        button.addEventListener("click", () => showView(button.dataset.view));
+      });
+
+      if (!token) {
+        status.className = "status problem";
+        status.textContent = "Return to Discord and open this page from the community rewards panel.";
+      } else {
+        load().catch((error) => {
+          status.className = "status problem";
+          status.textContent = error instanceof Error ? error.message : "Community rewards could not be opened.";
+        });
+      }
     </script>`
   );
 }
